@@ -7,8 +7,3 @@ type Item struct {
     Name     string     `json:"name"`
     Category string     `json:"category"`
 }
-
-type ItemPopularity struct {
-    ItemID           gocql.UUID `json:"item_id"`
-    PopularityCounter int64      `json:"popularity_counter"`
-}

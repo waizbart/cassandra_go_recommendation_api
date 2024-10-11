@@ -1,102 +1,126 @@
 package controllers
 
 import (
+	"fmt"
 	"log"
 	"net/http"
-	"time"
+	"sort"
 
 	"cassandra_go_recommendation_api/db"
+	"cassandra_go_recommendation_api/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 )
 
 func GetRecommendations(c *gin.Context) {
-    userID := c.Param("user_id")
-
-    // Buscar as categorias mais frequentes nas interações do usuário
-    queryInteractions := `SELECT category, COUNT(*) as interactions_count
-                          FROM user_interactions WHERE user_id = ? AND timestamp > ? 
-                          GROUP BY category ORDER BY interactions_count DESC LIMIT 3`
-    iter := db.Session.Query(queryInteractions, userID, time.Now().AddDate(0, -1, 0)).Iter() // Exemplo: Interações no último mês
-
-    var category string
-    var interactionsCount int
-    userCategories := []string{}
-
-    for iter.Scan(&category, &interactionsCount) {
-        userCategories = append(userCategories, category)
+    userIDStr := c.Param("user_id")
+    userID, err := gocql.ParseUUID(userIDStr); 
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
+        return
     }
+
+    iter := db.Session.Query(`
+        SELECT category FROM user_category_interactions
+        WHERE user_id = ?`, userID).Iter()
+
+    var categories []string
+    var category string
+    for iter.Scan(&category) {
+        categories = append(categories, category)
+    }
+
+    fmt.Println("categories", categories)
 
     if err := iter.Close(); err != nil {
-        log.Println("Erro ao buscar interações do usuário:", err)
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user interactions"})
+        log.Println("Failed to fetch user categories:", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch user data"})
         return
     }
 
-    if len(userCategories) == 0 {
-        c.JSON(http.StatusNotFound, gin.H{"error": "No interactions found for user"})
+    if len(categories) == 0 {
+        c.JSON(http.StatusOK, gin.H{"recommendations": []models.Item{}})
         return
     }
 
-    // Para cada categoria, buscar os itens mais populares
-    recommendations := []map[string]interface{}{}
+    type ItemScore struct {
+        Item   models.Item
+        Score  int64
+    }
 
-    for _, category := range userCategories {
-        queryItems := `SELECT item_id, name FROM items WHERE category = ? LIMIT 5`
-        iterItems := db.Session.Query(queryItems, category).Iter()
+    var recommendations []ItemScore
+    interactedItems := make(map[gocql.UUID]struct{})
+
+    userItemsIter := db.Session.Query(`
+        SELECT item_id FROM user_interacted_items
+        WHERE user_id = ?`, userID).Iter()
+
+    var interactedItemID gocql.UUID
+    for userItemsIter.Scan(&interactedItemID) {
+        interactedItems[interactedItemID] = struct{}{}
+    }
+
+    fmt.Println("interacted items", interactedItems)
+
+    if err := userItemsIter.Close(); err != nil {
+        log.Println("Failed to fetch user interactions:", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch user interactions"})
+        return
+    }
+
+    for _, category := range categories {
+        fmt.Println(category)
+        itemsIter := db.Session.Query(`
+            SELECT item_id, popularity_counter FROM item_popularity_by_category
+            WHERE category = ?`, category).Iter()
 
         var itemID gocql.UUID
-        var name string
+        var popularityCounter int64
 
-        for iterItems.Scan(&itemID, &name) {
-            recommendations = append(recommendations, map[string]interface{}{
-                "category": category,
-                "item_id":  itemID,
-                "name":     name,
+        for itemsIter.Scan(&itemID, &popularityCounter) {
+            fmt.Println(itemID, popularityCounter)
+            if _, exists := interactedItems[itemID]; exists {
+                continue
+            }
+
+            var item models.Item
+            if err := db.Session.Query(`
+                SELECT item_id, name, category FROM items WHERE item_id = ?`,
+                itemID).Scan(&item.ItemID, &item.Name, &item.Category); err != nil {
+                log.Println("Failed to fetch item details:", err)
+                continue
+            }
+
+            recommendations = append(recommendations, ItemScore{
+                Item:  item,
+                Score: popularityCounter,
             })
         }
 
-        if err := iterItems.Close(); err != nil {
-            log.Println("Erro ao buscar itens populares por categoria:", err)
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get popular items"})
-            return
+        if err := itemsIter.Close(); err != nil {
+            log.Println("Failed to fetch items for category:", category, err)
+            continue
         }
     }
 
-    if len(recommendations) == 0 {
-        c.JSON(http.StatusNotFound, gin.H{"error": "No recommendations available for user"})
-        return
+    fmt.Println("recomendations", recommendations)
+
+    // 3. Ordenar recomendações por score (popularidade) e limitar a N itens
+    sort.Slice(recommendations, func(i, j int) bool {
+        return recommendations[i].Score > recommendations[j].Score
+    })
+
+    // Limitar a 5 recomendações
+    maxRecommendations := 5
+    if len(recommendations) < maxRecommendations {
+        maxRecommendations = len(recommendations)
     }
 
-    c.JSON(http.StatusOK, gin.H{"recommendations": recommendations})
-}
-
-func GetPopularItems(c *gin.Context) {
-    query := `SELECT item_id, popularity_counter FROM item_popularity ORDER BY popularity_counter DESC LIMIT 5`
-    iter := db.Session.Query(query).Iter()
-
-    var itemID gocql.UUID
-    var popularityCounter int64
-    popularItems := []map[string]interface{}{}
-
-    for iter.Scan(&itemID, &popularityCounter) {
-        popularItems = append(popularItems, map[string]interface{}{
-            "item_id":          itemID,
-            "popularity_counter": popularityCounter,
-        })
+    finalRecommendations := make([]models.Item, maxRecommendations)
+    for i := 0; i < maxRecommendations; i++ {
+        finalRecommendations[i] = recommendations[i].Item
     }
 
-    if err := iter.Close(); err != nil {
-        log.Println("Erro ao obter popularidade dos itens:", err)
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get popular items"})
-        return
-    }
-
-    if len(popularItems) == 0 {
-        c.JSON(http.StatusNotFound, gin.H{"error": "No popular items found"})
-        return
-    }
-
-    c.JSON(http.StatusOK, gin.H{"popular_items": popularItems})
+    c.JSON(http.StatusOK, gin.H{"recommendations": finalRecommendations})
 }
