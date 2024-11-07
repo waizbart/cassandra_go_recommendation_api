@@ -106,7 +106,6 @@ func GetRecommendations(c *gin.Context) {
 
     fmt.Println("recomendations", recommendations)
 
-    // 3. Ordenar recomendações por score (popularidade) e limitar a N itens
     sort.Slice(recommendations, func(i, j int) bool {
         return recommendations[i].Score > recommendations[j].Score
     })

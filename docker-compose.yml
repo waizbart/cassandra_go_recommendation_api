@@ -1,0 +1,48 @@
+version: '3'
+services:
+  cassandra1:
+    image: cassandra:latest
+    container_name: cassandra1
+    environment:
+      CASSANDRA_CLUSTER_NAME: "TestCluster"
+      CASSANDRA_SEEDS: "cassandra1"
+      CASSANDRA_LISTEN_ADDRESS: "cassandra1"
+      CASSANDRA_BROADCAST_ADDRESS: "cassandra1"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "localhost"
+    ports:
+      - "9042:9042"
+    networks:
+      cassandra_net:
+        aliases:
+          - cassandra1
+    volumes:
+      - cassandra-data1:/var/lib/cassandra
+
+  cassandra2:
+    image: cassandra:latest
+    container_name: cassandra2
+    environment:
+      CASSANDRA_CLUSTER_NAME: "TestCluster"
+      CASSANDRA_SEEDS: "cassandra1"
+      CASSANDRA_LISTEN_ADDRESS: "cassandra2"
+      CASSANDRA_BROADCAST_ADDRESS: "cassandra2"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "localhost"
+    depends_on:
+      - cassandra1
+    ports:
+      - "9043:9042"
+    networks:
+      cassandra_net:
+        aliases:
+          - cassandra2
+    volumes:
+      - cassandra-data2:/var/lib/cassandra
+
+networks:
+  cassandra_net:
+
+volumes:
+  cassandra-data1:
+  cassandra-data2:
